@@ -1,25 +1,15 @@
-import * as cheerio from "cheerio"
 import { myFetch } from "#/utils/fetch"
 import { defineSource } from "#/utils/source"
 
 /**
- * HKEX Daily Quotation Data Source
+ * HKEX Data Source - Hong Kong Stock Exchange
  *
  * Endpoints:
- * - Daily Quotation (Main Board): https://www.hkex.com.hk/eng/stat/smstat/dayquot/d{yymmdd}e.htm
- * - Daily Quotation (Main Board Chinese): https://www.hkex.com.hk/chi/stat/smstat/dayquot/d{yymmdd}c.htm
- * - Daily Quotation (GEM): https://www.hkex.com.hk/eng/stat/smstat/dayquot/GEM/e_G{yymmdd}.htm
  * - CSM Daily Stats: https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_{yyyymmdd}e.js
+ * - Daily Quotation (Main Board): https://www.hkex.com.hk/eng/stat/smstat/dayquot/d{yymmdd}e.htm
+ * - Daily Quotation (GEM): https://www.hkex.com.hk/eng/stat/smstat/dayquot/GEM/e_G{yymmdd}.htm
  * - Short Selling: https://www.hkex.com.hk/eng/stat/smstat/ssturnover/ncms/ASHTMAIN.HTM
  */
-
-// Helper to format date as yymmdd
-function formatDateYYMMDD(date: Date): string {
-  const yy = String(date.getFullYear()).slice(-2)
-  const mm = String(date.getMonth() + 1).padStart(2, "0")
-  const dd = String(date.getDate()).padStart(2, "0")
-  return `${yy}${mm}${dd}`
-}
 
 // Helper to format date as yyyymmdd
 function formatDateYYYYMMDD(date: Date): string {
@@ -39,125 +29,250 @@ function getLatestTradingDay(): Date {
   return now
 }
 
-interface HKEXQuote {
-  code: string
-  name: string
-  turnover?: string
-  volume?: string
-  high?: string
-  low?: string
-  close?: string
-  change?: string
+/**
+ * CSM Data Types
+ * Market IDs: 0=SSE Northbound, 1=SSE Southbound, 2=SZSE Northbound, 3=SZSE Southbound
+ */
+interface CSMTableRow {
+  td: string[][]
+}
+
+interface CSMTable {
+  classname: string
+  schema: string[][]
+  tr: CSMTableRow[]
+}
+
+interface CSMContent {
+  style: number // 1=trading summary, 2=top10 stocks
+  table: CSMTable
+}
+
+interface CSMMarketData {
+  id: number
+  date: string
+  market: string
+  tradingDay: number
+  content: CSMContent[]
 }
 
 /**
- * Parse HKEX Daily Quotation HTML page
- * Data format is fixed-width text inside <pre> tags
+ * Parse CSM JavaScript data
+ * Format: tabData = [ { id, date, market, tradingDay, content: [...] }, ... ]
  */
-async function parseHKEXDailyQuotation(html: string): Promise<HKEXQuote[]> {
-  const $ = cheerio.load(html)
-  const quotes: HKEXQuote[] = []
+function parseCSMData(jsContent: string): CSMMarketData[] {
+  // Remove "tabData = " prefix and parse as JSON
+  const jsonStr = jsContent.replace(/^tabData\s*=\s*/, "").trim()
+  return JSON.parse(jsonStr)
+}
 
-  // The data is in <pre> tags with fixed-width format
-  // We need to find the "10 Most Actives" or stock listing sections
-  const preContent = $("pre").text()
+/**
+ * Extract top 10 stocks from CSM data
+ */
+interface CSMStock {
+  rank: string
+  code: string
+  name: string
+  buyTurnover?: string
+  sellTurnover?: string
+  totalTurnover: string
+  market: string
+}
 
-  // Parse the "10 Most Actives" section
-  // Format: CODE  NAME OF STOCK   CUR  TURNOVER ($)  SHARES TRADED  HIGH  LOW
-  const lines = preContent.split("\n")
+function extractTop10Stocks(data: CSMMarketData[]): CSMStock[] {
+  const stocks: CSMStock[] = []
 
-  let inActiveSection = false
-  for (const line of lines) {
-    // Detect section headers
-    if (line.includes("10 Most Actives") || line.includes("十大活躍")) {
-      inActiveSection = true
-      continue
+  for (const market of data) {
+    const top10Content = market.content.find(c => c.style === 2)
+    if (!top10Content) continue
+
+    for (const row of top10Content.table.tr) {
+      const td = row.td[0] // Data is in first element of td array
+      if (td.length >= 4) {
+        // Northbound: [Rank, Stock Code, Stock Name, Total Turnover]
+        // Southbound: [Rank, Stock Code, Stock Name, Buy Turnover, Sell Turnover, Total Turnover]
+        const isSouthbound = market.market.includes("Southbound")
+        stocks.push({
+          rank: td[0],
+          code: td[1],
+          name: td[2],
+          buyTurnover: isSouthbound ? td[3] : undefined,
+          sellTurnover: isSouthbound ? td[4] : undefined,
+          totalTurnover: isSouthbound ? td[5] : td[3],
+          market: market.market,
+        })
+      }
     }
+  }
 
-    // Skip separator lines
-    if (line.includes("---") || line.trim() === "") {
-      continue
+  return stocks
+}
+
+/**
+ * Extract trading summary from CSM data
+ */
+interface CSMTradingSummary {
+  market: string
+  date: string
+  totalTurnover: string
+  totalTradeCount: string
+  dqb?: string
+  etfTurnover: string
+  buyTurnover?: string
+  sellTurnover?: string
+}
+
+function extractTradingSummary(data: CSMMarketData[]): CSMTradingSummary[] {
+  const summaries: CSMTradingSummary[] = []
+
+  for (const market of data) {
+    const tradingContent = market.content.find(c => c.style === 1)
+    if (!tradingContent) continue
+
+    const values = tradingContent.table.tr.map(row => row.td[0][0])
+    const isNorthbound = market.market.includes("Northbound")
+
+    if (isNorthbound) {
+      // Northbound: [Total Turnover, Total Trade Count, DQB, ETF Turnover]
+      summaries.push({
+        market: market.market,
+        date: market.date,
+        totalTurnover: values[0],
+        totalTradeCount: values[1],
+        dqb: values[2],
+        etfTurnover: values[3],
+      })
     }
-
-    // Parse stock lines (starts with stock code like "00001" or "2800")
-    const stockMatch = line.match(/^\s*(\d{4,5})\s+(.+?)\s+(HKD|CNY|USD)\s+([\d,]+)\s+([\d,]+)\s+([\d.]+)\s+([\d.]+)/)
-    if (stockMatch && inActiveSection) {
-      quotes.push({
-        code: stockMatch[1].padStart(5, "0"),
-        name: stockMatch[2].trim(),
-        turnover: stockMatch[4],
-        volume: stockMatch[5],
-        high: stockMatch[6],
-        low: stockMatch[7],
+    else {
+      // Southbound: [Total Turnover, Buy Turnover, Sell Turnover, Total Trade Count, Buy Trade Count, Sell Trade Count, ETF Turnover]
+      summaries.push({
+        market: market.market,
+        date: market.date,
+        totalTurnover: values[0],
+        buyTurnover: values[1],
+        sellTurnover: values[2],
+        totalTradeCount: values[3],
+        etfTurnover: values[6],
       })
     }
   }
 
-  return quotes
+  return summaries
 }
 
 /**
- * HKEX Most Active Stocks
+ * HKEX CSM Northbound Top Stocks (滬股通/深股通 十大成交股)
  */
-const hkexMostActive = defineSource(async () => {
+const hkexNorthbound = defineSource(async () => {
   const date = getLatestTradingDay()
-  const dateStr = formatDateYYMMDD(date)
-  const url = `https://www.hkex.com.hk/eng/stat/smstat/dayquot/d${dateStr}e.htm`
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
 
-  const html = await myFetch(url, {
+  const jsContent: string = await myFetch(url, {
     headers: {
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
     },
+    responseType: "text",
   })
 
-  const quotes = await parseHKEXDailyQuotation(html)
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
 
-  return quotes.slice(0, 20).map(q => ({
-    id: q.code,
-    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${q.code}&sc_lang=en`,
-    title: `${q.code} ${q.name}`,
+  // Filter northbound stocks (SSE & SZSE Northbound)
+  const northboundStocks = stocks.filter(s => s.market.includes("Northbound"))
+
+  return northboundStocks.map(s => ({
+    id: `${s.code}-${s.market}`,
+    url: s.market.includes("SSE")
+      ? `https://www.sse.com.cn/assortment/stock/list/info/company/index.shtml?COMPANY_CODE=${s.code}`
+      : `https://www.szse.cn/certificate/individual/index.html?code=${s.code}`,
+    title: `${s.code} ${s.name}`,
     extra: {
-      info: q.turnover ? `成交額: $${q.turnover}` : undefined,
+      info: `${s.market.replace(" Northbound", "")} | 成交額: ¥${s.totalTurnover}`,
     },
   }))
 })
 
 /**
- * HKEX CSM (China Stock Markets / Stock Connect) Daily Statistics
- * This endpoint returns JavaScript data
+ * HKEX CSM Southbound Top Stocks (港股通 十大成交股)
  */
-const hkexCSMDaily = defineSource(async () => {
+const hkexSouthbound = defineSource(async () => {
   const date = getLatestTradingDay()
   const dateStr = formatDateYYYYMMDD(date)
   const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
 
-  try {
-    const jsContent = await myFetch(url, {
-      headers: {
-        "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
-      },
-    })
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
 
-    // The JS file contains data assignments like:
-    // var csm_data = { ... }
-    // We need to extract and parse this
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
 
-    // For now, return a placeholder - we need to see the actual JS format
-    return [{
-      id: `csm-${dateStr}`,
-      url: "https://www.hkex.com.hk/Mutual-Market/Stock-Connect/Statistics?sc_lang=en",
-      title: `滬深港通每日統計 ${dateStr}`,
-    }]
-  }
-  catch (error) {
-    console.error("Failed to fetch CSM data:", error)
-    return []
-  }
+  // Filter southbound stocks (SSE & SZSE Southbound)
+  const southboundStocks = stocks.filter(s => s.market.includes("Southbound"))
+
+  return southboundStocks.map(s => ({
+    id: `${s.code}-${s.market}`,
+    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${s.code}&sc_lang=en`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `${s.market.replace(" Southbound", "")} | 買入: $${s.buyTurnover} | 賣出: $${s.sellTurnover}`,
+    },
+  }))
+})
+
+/**
+ * HKEX CSM All Top Stocks (滬深港通 所有十大成交股)
+ */
+const hkexCSMAll = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const summaries = extractTradingSummary(data)
+  const stocks = extractTop10Stocks(data)
+
+  // Create summary items
+  const summaryItems = summaries.map(s => ({
+    id: `summary-${s.market}`,
+    url: "https://www.hkex.com.hk/Mutual-Market/Stock-Connect/Statistics?sc_lang=en",
+    title: `📊 ${s.market}`,
+    extra: {
+      info: `成交額: ${s.market.includes("Northbound") ? "¥" : "$"}${s.totalTurnover}M | 成交筆數: ${s.totalTradeCount}`,
+    },
+  }))
+
+  // Create stock items
+  const stockItems = stocks.slice(0, 20).map(s => ({
+    id: `${s.code}-${s.market}`,
+    url: s.market.includes("Southbound")
+      ? `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${s.code}&sc_lang=en`
+      : s.market.includes("SSE")
+        ? `https://www.sse.com.cn/assortment/stock/list/info/company/index.shtml?COMPANY_CODE=${s.code}`
+        : `https://www.szse.cn/certificate/individual/index.html?code=${s.code}`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `#${s.rank} ${s.market}`,
+    },
+  }))
+
+  return [...summaryItems, ...stockItems]
 })
 
 export default defineSource({
-  "hkex": hkexMostActive,
-  "hkex-most-active": hkexMostActive,
-  "hkex-csm": hkexCSMDaily,
+  "hkex": hkexCSMAll,
+  "hkex-csm": hkexCSMAll,
+  "hkex-northbound": hkexNorthbound,
+  "hkex-southbound": hkexSouthbound,
 })
