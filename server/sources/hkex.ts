@@ -270,9 +270,273 @@ const hkexCSMAll = defineSource(async () => {
   return [...summaryItems, ...stockItems]
 })
 
+/**
+ * HKEX Market Calendar (交易日曆)
+ * Endpoint: https://www.hkex.com.hk/Market/Json/calendar/{YYYYMM}_en.json
+ */
+interface CalendarEvent {
+  date: string
+  title: string
+  type: string
+}
+
+interface CalendarResponse {
+  events: CalendarEvent[]
+}
+
+const hkexCalendar = defineSource(async () => {
+  const now = new Date()
+  const yyyy = now.getFullYear()
+  const mm = String(now.getMonth() + 1).padStart(2, "0")
+
+  const url = `https://www.hkex.com.hk/Market/Json/calendar/${yyyy}${mm}_en.json`
+
+  try {
+    const data: CalendarResponse = await myFetch(url)
+
+    if (!data.events || data.events.length === 0) {
+      return []
+    }
+
+    return data.events.slice(0, 10).map(event => ({
+      id: `calendar-${event.date}`,
+      url: "https://www.hkex.com.hk/Services/Trading/Trading-Calendar?sc_lang=en",
+      title: event.title,
+      extra: {
+        info: `${event.date} | ${event.type}`,
+      },
+    }))
+  }
+  catch {
+    return []
+  }
+})
+
+/**
+ * HKEX News JSON (新聞公告)
+ * Endpoint: https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_{page}.json
+ */
+interface HKEXNewsItem {
+  STOCK_NAME?: string
+  STOCK_CODE?: string
+  TITLE?: string
+  DATE_TIME?: string
+  NEWS_ID?: string
+  LONG_TEXT?: string
+  FILE_LINK?: string
+}
+
+interface HKEXNewsResponse {
+  newsInfoLst?: HKEXNewsItem[]
+}
+
+const hkexNews = defineSource(async () => {
+  const url = "https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_1.json"
+
+  try {
+    const data: HKEXNewsResponse = await myFetch(url)
+
+    if (!data.newsInfoLst || data.newsInfoLst.length === 0) {
+      return []
+    }
+
+    return data.newsInfoLst.slice(0, 20).map(item => ({
+      id: item.NEWS_ID || `news-${item.DATE_TIME}`,
+      url: item.FILE_LINK
+        ? `https://www1.hkexnews.hk${item.FILE_LINK}`
+        : "https://www.hkexnews.hk/",
+      title: item.TITLE || item.LONG_TEXT || "HKEX News",
+      extra: {
+        info: item.STOCK_CODE
+          ? `${item.STOCK_CODE} ${item.STOCK_NAME} | ${item.DATE_TIME}`
+          : item.DATE_TIME,
+      },
+    }))
+  }
+  catch {
+    return []
+  }
+})
+
+/**
+ * HKEX IPO News (新股公告)
+ */
+const hkexIPO = defineSource(async () => {
+  // IPO news from page 1
+  const url = "https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_1.json"
+
+  try {
+    const data: HKEXNewsResponse = await myFetch(url)
+
+    if (!data.newsInfoLst) {
+      return []
+    }
+
+    // Filter for IPO related news (new listings)
+    const ipoNews = data.newsInfoLst.filter(item =>
+      item.TITLE?.includes("Listing") ||
+      item.TITLE?.includes("IPO") ||
+      item.TITLE?.includes("Prospectus") ||
+      item.LONG_TEXT?.includes("new listing"),
+    )
+
+    return ipoNews.slice(0, 10).map(item => ({
+      id: item.NEWS_ID || `ipo-${item.DATE_TIME}`,
+      url: item.FILE_LINK
+        ? `https://www1.hkexnews.hk${item.FILE_LINK}`
+        : "https://www.hkexnews.hk/",
+      title: item.TITLE || "IPO News",
+      extra: {
+        info: item.STOCK_CODE
+          ? `${item.STOCK_CODE} | ${item.DATE_TIME}`
+          : item.DATE_TIME,
+      },
+    }))
+  }
+  catch {
+    return []
+  }
+})
+
+/**
+ * SSE Northbound Only (滬股通)
+ */
+const hkexSSENorthbound = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
+
+  // Filter SSE Northbound only
+  const sseStocks = stocks.filter(s => s.market === "SSE Northbound")
+
+  return sseStocks.map(s => ({
+    id: `${s.code}-sse`,
+    url: `https://www.sse.com.cn/assortment/stock/list/info/company/index.shtml?COMPANY_CODE=${s.code}`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `#${s.rank} 滬股通 | 成交額: ¥${s.totalTurnover}`,
+    },
+  }))
+})
+
+/**
+ * SZSE Northbound Only (深股通)
+ */
+const hkexSZSENorthbound = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
+
+  // Filter SZSE Northbound only
+  const szseStocks = stocks.filter(s => s.market === "SZSE Northbound")
+
+  return szseStocks.map(s => ({
+    id: `${s.code}-szse`,
+    url: `https://www.szse.cn/certificate/individual/index.html?code=${s.code}`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `#${s.rank} 深股通 | 成交額: ¥${s.totalTurnover}`,
+    },
+  }))
+})
+
+/**
+ * SSE Southbound Only (滬港通-港股)
+ */
+const hkexSSESouthbound = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
+
+  // Filter SSE Southbound only
+  const sseStocks = stocks.filter(s => s.market === "SSE Southbound")
+
+  return sseStocks.map(s => ({
+    id: `${s.code}-sse-sb`,
+    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${s.code}&sc_lang=en`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `#${s.rank} 滬港通 | 買: $${s.buyTurnover} 賣: $${s.sellTurnover}`,
+    },
+  }))
+})
+
+/**
+ * SZSE Southbound Only (深港通-港股)
+ */
+const hkexSZSESouthbound = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const stocks = extractTop10Stocks(data)
+
+  // Filter SZSE Southbound only
+  const szseStocks = stocks.filter(s => s.market === "SZSE Southbound")
+
+  return szseStocks.map(s => ({
+    id: `${s.code}-szse-sb`,
+    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${s.code}&sc_lang=en`,
+    title: `${s.code} ${s.name}`,
+    extra: {
+      info: `#${s.rank} 深港通 | 買: $${s.buyTurnover} 賣: $${s.sellTurnover}`,
+    },
+  }))
+})
+
 export default defineSource({
+  // Stock Connect 滬深港通
   "hkex": hkexCSMAll,
   "hkex-csm": hkexCSMAll,
   "hkex-northbound": hkexNorthbound,
   "hkex-southbound": hkexSouthbound,
+
+  // Individual markets
+  "hkex-sse-northbound": hkexSSENorthbound,
+  "hkex-szse-northbound": hkexSZSENorthbound,
+  "hkex-sse-southbound": hkexSSESouthbound,
+  "hkex-szse-southbound": hkexSZSESouthbound,
+
+  // News & Calendar
+  "hkex-news": hkexNews,
+  "hkex-ipo": hkexIPO,
+  "hkex-calendar": hkexCalendar,
 })
