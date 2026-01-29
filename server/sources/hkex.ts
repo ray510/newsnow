@@ -1,3 +1,4 @@
+import process from "node:process"
 import { myFetch } from "#/utils/fetch"
 import { defineSource } from "#/utils/source"
 
@@ -6,10 +7,68 @@ import { defineSource } from "#/utils/source"
  *
  * Endpoints:
  * - CSM Daily Stats: https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_{yyyymmdd}e.js
+ * - Widget API: https://www1.hkex.com.hk/hkexwidget/data/{endpoint}?token={TOKEN}
  * - Daily Quotation (Main Board): https://www.hkex.com.hk/eng/stat/smstat/dayquot/d{yymmdd}e.htm
- * - Daily Quotation (GEM): https://www.hkex.com.hk/eng/stat/smstat/dayquot/GEM/e_G{yymmdd}.htm
  * - Short Selling: https://www.hkex.com.hk/eng/stat/smstat/ssturnover/ncms/ASHTMAIN.HTM
+ *
+ * Widget API requires token from env: HKEX_TOKEN
  */
+
+// HKEX Widget API Base URL
+const WIDGET_API_BASE = "https://www1.hkex.com.hk/hkexwidget/data"
+
+// Get token from environment variable
+function getHKEXToken(): string | undefined {
+  return process.env.HKEX_TOKEN
+}
+
+/**
+ * Parse JSONP response to JSON
+ * Format: jQuery_callback({...})
+ */
+function parseJSONP(text: string): unknown {
+  const match = text.match(/\((.+)\)/)
+  if (match && match[1]) {
+    return JSON.parse(match[1])
+  }
+  return JSON.parse(text)
+}
+
+/**
+ * Fetch from HKEX Widget API
+ */
+async function fetchWidgetAPI<T>(endpoint: string, params: Record<string, string> = {}): Promise<T | null> {
+  const token = getHKEXToken()
+  if (!token) {
+    console.warn("HKEX_TOKEN not set, Widget API unavailable")
+    return null
+  }
+
+  const url = new URL(`${WIDGET_API_BASE}/${endpoint}`)
+  url.searchParams.set("lang", "eng")
+  url.searchParams.set("token", token)
+  url.searchParams.set("qid", Date.now().toString())
+  url.searchParams.set("callback", "jQuery_callback")
+
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value)
+  }
+
+  try {
+    const text: string = await myFetch(url.toString(), {
+      headers: {
+        "Referer": "https://www.hkex.com.hk/",
+      },
+      responseType: "text",
+    })
+
+    return parseJSONP(text) as T
+  }
+  catch (error) {
+    console.error(`HKEX Widget API error (${endpoint}):`, error)
+    return null
+  }
+}
 
 // Helper to format date as yyyymmdd
 function formatDateYYYYMMDD(date: Date): string {
@@ -28,6 +87,204 @@ function getLatestTradingDay(): Date {
   else if (day === 6) now.setDate(now.getDate() - 1)
   return now
 }
+
+// ============================================================
+// Widget API Types & Sources (需要 HKEX_TOKEN 環境變量)
+// ============================================================
+
+/**
+ * Market Overview Response
+ */
+interface MarketIndex {
+  nm_s: string // Short name
+  nm_l: string // Long name
+  ric: string // Reuters Instrument Code
+  ls: string // Last price
+  nc: string // Net change
+  pc: string // Percent change
+  hi: string // High
+  lo: string // Low
+  op: string // Open
+  hc: string // Previous close
+  date: string
+  tm: string // Time
+  ts: number // Timestamp
+  type: string
+}
+
+interface MarketOverviewResponse {
+  responsecode: string
+  indices: MarketIndex[]
+}
+
+/**
+ * HKEX Market Overview (市場概況 - 主要指數)
+ * Endpoint: getmarketoverview2
+ */
+const hkexMarketOverview = defineSource(async () => {
+  const data = await fetchWidgetAPI<MarketOverviewResponse>("getmarketoverview2")
+
+  if (!data || data.responsecode !== "000" || !data.indices) {
+    return []
+  }
+
+  return data.indices.slice(0, 15).map(idx => ({
+    id: idx.ric,
+    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities?sc_lang=en`,
+    title: `${idx.nm_s} ${idx.ls}`,
+    extra: {
+      info: `${idx.nc} (${idx.pc}%) | H: ${idx.hi} L: ${idx.lo} | ${idx.tm}`,
+    },
+  }))
+})
+
+/**
+ * Equity Quote Response
+ */
+interface EquityQuote {
+  sym: string
+  nm: string
+  ls: string // Last price
+  nc: string // Net change
+  pc: string // Percent change
+  hi: string // High
+  lo: string // Low
+  op: string // Open
+  hc: string // Previous close
+  vo: string // Volume
+  am: string // Amount
+  mktcap?: string
+}
+
+interface EquityQuoteResponse {
+  data: {
+    responsecode: string
+    quote: EquityQuote
+  }
+}
+
+/**
+ * HKEX Hot Stocks Quote (熱門股票報價)
+ * Fetches quotes for popular HK stocks
+ */
+const hkexHotStocks = defineSource(async () => {
+  // Popular HK stock codes
+  const hotSymbols = ["700", "9988", "1810", "9618", "3690", "2318", "941", "1299", "388", "5"]
+
+  const results = await Promise.all(
+    hotSymbols.map(sym =>
+      fetchWidgetAPI<EquityQuoteResponse>("getequityquote", { sym }),
+    ),
+  )
+
+  return results
+    .filter((r): r is EquityQuoteResponse => r !== null && r.data?.responsecode === "000")
+    .map(r => ({
+      id: r.data.quote.sym,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${r.data.quote.sym}&sc_lang=en`,
+      title: `${r.data.quote.sym} ${r.data.quote.nm} $${r.data.quote.ls}`,
+      extra: {
+        info: `${r.data.quote.nc} (${r.data.quote.pc}%) | 成交量: ${r.data.quote.vo}`,
+      },
+    }))
+})
+
+/**
+ * Stock Search Response
+ */
+interface StockSearchResult {
+  sym: string
+  nm: string
+  type: string
+}
+
+interface StockSearchResponse {
+  data: {
+    responsecode: string
+    stocklist: StockSearchResult[]
+  }
+}
+
+/**
+ * Market Turnover Response
+ */
+interface TurnoverData {
+  turnover: string
+  tradecount: string
+  date: string
+  time: string
+}
+
+interface MarketTurnoverResponse {
+  data: {
+    responsecode: string
+    turnover: TurnoverData
+  }
+}
+
+/**
+ * HKEX Market Turnover (市場成交額)
+ */
+const hkexMarketTurnover = defineSource(async () => {
+  const data = await fetchWidgetAPI<MarketTurnoverResponse>("getmarketturnover")
+
+  if (!data || data.data?.responsecode !== "000") {
+    return []
+  }
+
+  const turnover = data.data.turnover
+
+  return [{
+    id: "market-turnover",
+    url: "https://www.hkex.com.hk/Market-Data/Statistics/Consolidated-Reports/HKEX-Monthly-Market-Highlights?sc_lang=en",
+    title: `📊 港股成交額: $${turnover.turnover}`,
+    extra: {
+      info: `成交筆數: ${turnover.tradecount} | ${turnover.date} ${turnover.time}`,
+    },
+  }]
+})
+
+/**
+ * Market Marquee Response (跑馬燈)
+ */
+interface MarqueeItem {
+  sym: string
+  nm: string
+  ls: string
+  nc: string
+  pc: string
+}
+
+interface MarketMarqueeResponse {
+  responsecode: string
+  items: MarqueeItem[]
+}
+
+/**
+ * HKEX Market Marquee (市場跑馬燈 - 主要指數實時)
+ */
+const hkexMarketMarquee = defineSource(async () => {
+  const data = await fetchWidgetAPI<MarketMarqueeResponse>("getmarketmarquee", {
+    sym: ".HSI;.HSCE;.HSTECH;.CSI300;CNH=X",
+  })
+
+  if (!data || data.responsecode !== "000" || !data.items) {
+    return []
+  }
+
+  return data.items.map(item => ({
+    id: item.sym,
+    url: "https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities?sc_lang=en",
+    title: `${item.nm} ${item.ls}`,
+    extra: {
+      info: `${item.nc} (${item.pc}%)`,
+    },
+  }))
+})
+
+// ============================================================
+// CSM Data Types (不需要 Token)
+// ============================================================
 
 /**
  * CSM Data Types
@@ -523,20 +780,27 @@ const hkexSZSESouthbound = defineSource(async () => {
 })
 
 export default defineSource({
-  // Stock Connect 滬深港通
+  // Stock Connect 滬深港通 (不需要 Token)
   "hkex": hkexCSMAll,
   "hkex-csm": hkexCSMAll,
   "hkex-northbound": hkexNorthbound,
   "hkex-southbound": hkexSouthbound,
 
-  // Individual markets
+  // Individual markets (不需要 Token)
   "hkex-sse-northbound": hkexSSENorthbound,
   "hkex-szse-northbound": hkexSZSENorthbound,
   "hkex-sse-southbound": hkexSSESouthbound,
   "hkex-szse-southbound": hkexSZSESouthbound,
 
-  // News & Calendar
+  // News & Calendar (不需要 Token)
   "hkex-news": hkexNews,
   "hkex-ipo": hkexIPO,
   "hkex-calendar": hkexCalendar,
+
+  // Widget API (需要 HKEX_TOKEN 環境變量)
+  "hkex-market": hkexMarketOverview,
+  "hkex-indices": hkexMarketOverview,
+  "hkex-marquee": hkexMarketMarquee,
+  "hkex-hotstocks": hkexHotStocks,
+  "hkex-turnover": hkexMarketTurnover,
 })
