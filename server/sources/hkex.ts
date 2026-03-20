@@ -282,6 +282,129 @@ const hkexMarketMarquee = defineSource(async () => {
   }))
 })
 
+/**
+ * Stock Search Response
+ */
+interface SearchStockItem {
+  sym: string
+  nm: string
+  type: string
+}
+
+interface SearchStockResponse {
+  data: {
+    responsecode: string
+    stocklist: SearchStockItem[]
+  }
+}
+
+/**
+ * HKEX Stock Search (股票搜索)
+ * Endpoint: getstocksearch
+ * Note: Returns empty list since no search term by default
+ * This is more useful as a utility function
+ */
+async function searchHKEXStocks(query: string): Promise<SearchStockItem[]> {
+  const data = await fetchWidgetAPI<SearchStockResponse>("getstocksearch", { q: query })
+
+  if (!data || data.data?.responsecode !== "000" || !data.data.stocklist) {
+    return []
+  }
+
+  return data.data.stocklist
+}
+
+/**
+ * HKEX Popular Stock Searches (熱門搜索)
+ * Searches for common stock terms
+ */
+const hkexStockSearch = defineSource(async () => {
+  // Search for major tech companies
+  const results = await searchHKEXStocks("tech")
+
+  return results.slice(0, 15).map(stock => ({
+    id: stock.sym,
+    url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${stock.sym}&sc_lang=en`,
+    title: `${stock.sym} ${stock.nm}`,
+    extra: {
+      info: stock.type,
+    },
+  }))
+})
+
+/**
+ * HKEX Blue Chip Stocks (藍籌股報價)
+ * Fetches quotes for HSI constituent stocks
+ */
+const hkexBlueChips = defineSource(async () => {
+  // Major HSI constituent stocks
+  const blueChipSymbols = [
+    "5", // HSBC
+    "1398", // ICBC
+    "939", // CCB
+    "3988", // BOC
+    "2628", // China Life
+    "1299", // AIA
+    "941", // China Mobile
+    "883", // CNOOC
+    "386", // Sinopec
+    "857", // PetroChina
+  ]
+
+  const results = await Promise.all(
+    blueChipSymbols.map(sym =>
+      fetchWidgetAPI<EquityQuoteResponse>("getequityquote", { sym }),
+    ),
+  )
+
+  return results
+    .filter((r): r is EquityQuoteResponse => r !== null && r.data?.responsecode === "000")
+    .map(r => ({
+      id: r.data.quote.sym,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${r.data.quote.sym}&sc_lang=en`,
+      title: `${r.data.quote.sym} ${r.data.quote.nm} $${r.data.quote.ls}`,
+      extra: {
+        info: `${r.data.quote.nc} (${r.data.quote.pc}%) | Vol: ${r.data.quote.vo}`,
+      },
+    }))
+})
+
+/**
+ * HKEX China Tech Stocks (中概科技股)
+ */
+const hkexChinaTech = defineSource(async () => {
+  // Major China tech stocks listed in HK
+  const techSymbols = [
+    "700", // Tencent
+    "9988", // Alibaba
+    "9618", // JD.com
+    "3690", // Meituan
+    "1810", // Xiaomi
+    "9888", // Baidu
+    "9999", // NetEase
+    "2015", // Li Auto
+    "9866", // NIO
+    "9868", // XPeng
+  ]
+
+  const results = await Promise.all(
+    techSymbols.map(sym =>
+      fetchWidgetAPI<EquityQuoteResponse>("getequityquote", { sym }),
+    ),
+  )
+
+  return results
+    .filter((r): r is EquityQuoteResponse => r !== null && r.data?.responsecode === "000")
+    .map(r => ({
+      id: r.data.quote.sym,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${r.data.quote.sym}&sc_lang=en`,
+      title: `${r.data.quote.sym} ${r.data.quote.nm} $${r.data.quote.ls}`,
+      extra: {
+        info: `${r.data.quote.nc} (${r.data.quote.pc}%) | 成交量: ${r.data.quote.vo}`,
+      },
+    }))
+})
+
 // ============================================================
 // CSM Data Types (不需要 Token)
 // ============================================================
@@ -779,10 +902,111 @@ const hkexSZSESouthbound = defineSource(async () => {
   }))
 })
 
+/**
+ * HKEX CSM Trading Summary (滬深港通成交摘要)
+ */
+const hkexCSMSummary = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/csm/DailyStat/data_tab_daily_${dateStr}e.js`
+
+  const jsContent: string = await myFetch(url, {
+    headers: {
+      "Referer": "https://www.hkex.com.hk/eng/csm/chinaconndstat_daily.htm",
+    },
+    responseType: "text",
+  })
+
+  const data = parseCSMData(jsContent)
+  const summaries = extractTradingSummary(data)
+
+  return summaries.map(s => ({
+    id: `summary-${s.market}`,
+    url: "https://www.hkex.com.hk/Mutual-Market/Stock-Connect/Statistics?sc_lang=en",
+    title: `📊 ${s.market} ${s.date}`,
+    extra: {
+      info: s.market.includes("Northbound")
+        ? `成交額: ¥${s.totalTurnover}M | 筆數: ${s.totalTradeCount} | DQB: ${s.dqb}`
+        : `成交額: $${s.totalTurnover}M | 買: $${s.buyTurnover}M | 賣: $${s.sellTurnover}M`,
+    },
+  }))
+})
+
+/**
+ * HKEX Financial Stocks (金融股)
+ */
+const hkexFinancials = defineSource(async () => {
+  const financialSymbols = [
+    "388", // HKEX
+    "5", // HSBC
+    "2888", // Standard Chartered
+    "1398", // ICBC
+    "939", // CCB
+    "3988", // BOC
+    "1288", // ABC
+    "2318", // Ping An
+    "2628", // China Life
+    "1299", // AIA
+  ]
+
+  const results = await Promise.all(
+    financialSymbols.map(sym =>
+      fetchWidgetAPI<EquityQuoteResponse>("getequityquote", { sym }),
+    ),
+  )
+
+  return results
+    .filter((r): r is EquityQuoteResponse => r !== null && r.data?.responsecode === "000")
+    .map(r => ({
+      id: r.data.quote.sym,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${r.data.quote.sym}&sc_lang=en`,
+      title: `${r.data.quote.sym} ${r.data.quote.nm} $${r.data.quote.ls}`,
+      extra: {
+        info: `${r.data.quote.nc} (${r.data.quote.pc}%) | Vol: ${r.data.quote.vo}`,
+      },
+    }))
+})
+
+/**
+ * HKEX Property Stocks (地產股)
+ */
+const hkexProperty = defineSource(async () => {
+  const propertySymbols = [
+    "16", // SHK Properties
+    "1", // CK Hutchison
+    "12", // Henderson Land
+    "17", // New World Dev
+    "83", // Sino Land
+    "101", // Hang Lung Properties
+    "688", // China Overseas Land
+    "1109", // China Resources Land
+    "2007", // Country Garden
+    "3333", // Evergrande
+  ]
+
+  const results = await Promise.all(
+    propertySymbols.map(sym =>
+      fetchWidgetAPI<EquityQuoteResponse>("getequityquote", { sym }),
+    ),
+  )
+
+  return results
+    .filter((r): r is EquityQuoteResponse => r !== null && r.data?.responsecode === "000")
+    .map(r => ({
+      id: r.data.quote.sym,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${r.data.quote.sym}&sc_lang=en`,
+      title: `${r.data.quote.sym} ${r.data.quote.nm} $${r.data.quote.ls}`,
+      extra: {
+        info: `${r.data.quote.nc} (${r.data.quote.pc}%) | Vol: ${r.data.quote.vo}`,
+      },
+    }))
+})
+
 export default defineSource({
   // Stock Connect 滬深港通 (不需要 Token)
   "hkex": hkexCSMAll,
   "hkex-csm": hkexCSMAll,
+  "hkex-csm-summary": hkexCSMSummary,
   "hkex-northbound": hkexNorthbound,
   "hkex-southbound": hkexSouthbound,
 
@@ -797,10 +1021,17 @@ export default defineSource({
   "hkex-ipo": hkexIPO,
   "hkex-calendar": hkexCalendar,
 
-  // Widget API (需要 HKEX_TOKEN 環境變量)
+  // Widget API - Market Overview (需要 HKEX_TOKEN 環境變量)
   "hkex-market": hkexMarketOverview,
   "hkex-indices": hkexMarketOverview,
   "hkex-marquee": hkexMarketMarquee,
-  "hkex-hotstocks": hkexHotStocks,
   "hkex-turnover": hkexMarketTurnover,
+
+  // Widget API - Stock Quotes (需要 HKEX_TOKEN 環境變量)
+  "hkex-hotstocks": hkexHotStocks,
+  "hkex-search": hkexStockSearch,
+  "hkex-bluechips": hkexBlueChips,
+  "hkex-tech": hkexChinaTech,
+  "hkex-financials": hkexFinancials,
+  "hkex-property": hkexProperty,
 })

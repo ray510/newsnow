@@ -74,6 +74,18 @@ ENDPOINTS_TO_TEST = [
     # 延遲報價 (可能是另一個路徑)
     {"name": "延遲報價", "endpoint": "getdelayedquote", "params": {"sym": "700"}},
     {"name": "即時報價", "endpoint": "getrealtimequote", "params": {"sym": "700"}},
+
+    # 額外測試端點
+    {"name": "ETF報價", "endpoint": "getetfquote", "params": {"sym": "2800"}},
+    {"name": "期權鏈", "endpoint": "getoptionchain", "params": {"sym": "700"}},
+    {"name": "歷史數據", "endpoint": "gethistoricaldata", "params": {"sym": "700"}},
+    {"name": "K線數據", "endpoint": "getklinedata", "params": {"sym": "700"}},
+    {"name": "分時數據", "endpoint": "gettimelinedata", "params": {"sym": "700"}},
+    {"name": "大盤數據", "endpoint": "getmarketdata", "params": {}},
+    {"name": "板塊數據", "endpoint": "getsectordata", "params": {}},
+    {"name": "行業數據", "endpoint": "getindustrydata", "params": {}},
+    {"name": "公司資料", "endpoint": "getcompanyinfo", "params": {"sym": "700"}},
+    {"name": "財務數據", "endpoint": "getfinancialdata", "params": {"sym": "700"}},
 ]
 
 def clean_jsonp(text):

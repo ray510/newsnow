@@ -205,7 +205,41 @@ https://www.hkex.com.hk/Market/Json/card/{GUID}_en.json
 
 ---
 
-## 5. 端點狀態總結
+## 5. HKEXnews JSON API
+
+### 新聞公告
+```
+https://www1.hkexnews.hk/ncms/json/eds/lcisehk1relsdc_{page}.json
+```
+
+參數：`{page}` - 頁碼 (1, 2, 3...)
+
+返回格式：
+```json
+{
+  "newsInfoLst": [
+    {
+      "STOCK_NAME": "Company Name",
+      "STOCK_CODE": "0700",
+      "TITLE": "Announcement Title",
+      "DATE_TIME": "2026-03-20 10:30",
+      "NEWS_ID": "123456",
+      "LONG_TEXT": "Description",
+      "FILE_LINK": "/listedco/listconews/sehk/..."
+    }
+  ]
+}
+```
+
+### CCASS 持股查詢
+```
+https://www3.hkexnews.hk/sdw/search/searchsdw.aspx
+```
+注意：此端點為 HTML 表單，需要 POST 請求
+
+---
+
+## 6. 端點狀態總結
 
 | 端點 | 需要 Token | 格式 | 狀態 |
 |------|-----------|------|------|
@@ -215,9 +249,71 @@ https://www.hkex.com.hk/Market/Json/card/{GUID}_en.json
 | Short Selling | ❌ | HTML | ✅ |
 | Securities List | ❌ | XLSX | ✅ |
 | Shareholding | ❌ | HTML | ✅ |
+| HKEXnews JSON | ❌ | JSON | ✅ |
+| Calendar JSON | ❌ | JSON | ✅ |
+
+---
+
+## 7. 已實現的數據源
+
+以下是 `server/sources/hkex.ts` 中已實現的數據源：
+
+### 不需要 Token 的數據源
+
+| 數據源 ID | 描述 | 端點 |
+|----------|------|------|
+| `hkex` | 滬深港通所有數據 | CSM DailyStat |
+| `hkex-csm` | 滬深港通所有數據 | CSM DailyStat |
+| `hkex-csm-summary` | 滬深港通成交摘要 | CSM DailyStat |
+| `hkex-northbound` | 北向十大成交股 | CSM DailyStat |
+| `hkex-southbound` | 南向十大成交股 | CSM DailyStat |
+| `hkex-sse-northbound` | 滬股通十大成交 | CSM DailyStat |
+| `hkex-szse-northbound` | 深股通十大成交 | CSM DailyStat |
+| `hkex-sse-southbound` | 滬港通十大成交 | CSM DailyStat |
+| `hkex-szse-southbound` | 深港通十大成交 | CSM DailyStat |
+| `hkex-news` | HKEX 新聞公告 | HKEXnews JSON |
+| `hkex-ipo` | 新股 IPO 公告 | HKEXnews JSON |
+| `hkex-calendar` | 交易日曆 | Calendar JSON |
+
+### 需要 Token 的數據源 (設置 HKEX_TOKEN 環境變量)
+
+| 數據源 ID | 描述 | 端點 |
+|----------|------|------|
+| `hkex-market` | 市場概況/主要指數 | getmarketoverview2 |
+| `hkex-indices` | 主要指數數據 | getmarketoverview2 |
+| `hkex-marquee` | 市場跑馬燈 | getmarketmarquee |
+| `hkex-turnover` | 市場成交額 | getmarketturnover |
+| `hkex-hotstocks` | 熱門股票報價 | getequityquote |
+| `hkex-search` | 股票搜索 | getstocksearch |
+| `hkex-bluechips` | 藍籌股報價 | getequityquote |
+| `hkex-tech` | 中概科技股報價 | getequityquote |
+| `hkex-financials` | 金融股報價 | getequityquote |
+| `hkex-property` | 地產股報價 | getequityquote |
+
+---
+
+## 8. 潛在的額外端點 (待驗證)
+
+以下端點可能存在但尚未驗證：
+
+### HKEX Data Portal
+```
+https://data.hkex.com.hk/
+```
+提供 CCASS 持股數據等
+
+### HKEX Programmatic Download API
+```
+https://www.hkex.com.hk/-/media/HKEX-Market/Global/Exchange/FAQ/Market-Data/Getting-Market-Data/Historical-Data/Programmatic-Download-API-Interface-Specification-v1,-d-,0.pdf
+```
+官方歷史數據下載 API 規範
+
+### Stock Connect 額度數據
+HKEX 網站實時顯示北向/南向資金額度餘額，但公開 API 端點待確認
 
 ---
 
 ## 更新記錄
 
+- 2026-03-20: 添加更多數據源 (藍籌股、科技股、金融股、地產股)
 - 2026-01-29: 初始版本，記錄所有已發現端點
