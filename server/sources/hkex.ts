@@ -1002,6 +1002,185 @@ const hkexProperty = defineSource(async () => {
     }))
 })
 
+// ============================================================
+// HTML Parsing Sources (不需要 Token)
+// ============================================================
+
+/**
+ * Parse HTML table rows
+ * Extracts text content from TD elements
+ */
+function parseHTMLTableRows(html: string, tablePattern: RegExp): string[][] {
+  const tableMatch = html.match(tablePattern)
+  if (!tableMatch) return []
+
+  const tableContent = tableMatch[0]
+  const rows: string[][] = []
+
+  // Match each TR
+  const trPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi
+  let trMatch
+  while ((trMatch = trPattern.exec(tableContent)) !== null) {
+    const rowContent = trMatch[1]
+    const cells: string[] = []
+
+    // Match each TD
+    const tdPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi
+    let tdMatch
+    while ((tdMatch = tdPattern.exec(rowContent)) !== null) {
+      // Remove HTML tags and trim
+      const text = tdMatch[1].replace(/<[^>]+>/g, "").trim()
+      cells.push(text)
+    }
+
+    if (cells.length > 0) {
+      rows.push(cells)
+    }
+  }
+
+  return rows
+}
+
+/**
+ * HKEX Short Selling Data (賣空數據)
+ * Endpoint: https://www.hkex.com.hk/eng/stat/smstat/ssturnover/ncms/ASHTMAIN.HTM
+ */
+const hkexShortSelling = defineSource(async () => {
+  const url = "https://www.hkex.com.hk/eng/stat/smstat/ssturnover/ncms/ASHTMAIN.HTM"
+
+  try {
+    const html: string = await myFetch(url, {
+      headers: {
+        "Referer": "https://www.hkex.com.hk/",
+      },
+      responseType: "text",
+    })
+
+    // Parse the main data table
+    const tablePattern = /<table[^>]*class="[^"]*table_grey_border[^"]*"[^>]*>[\s\S]*?<\/table>/i
+    const rows = parseHTMLTableRows(html, tablePattern)
+
+    // Skip header rows and extract data
+    const dataRows = rows.filter(row =>
+      row.length >= 4 && /^\d+$/.test(row[0].replace(/,/g, "")),
+    )
+
+    return dataRows.slice(0, 20).map((row, idx) => ({
+      id: `ss-${idx}-${row[0]}`,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${row[0]}&sc_lang=en`,
+      title: `${row[0]} ${row[1]}`,
+      extra: {
+        info: `賣空金額: $${row[2]} | 佔比: ${row[3]}%`,
+      },
+    }))
+  }
+  catch {
+    return []
+  }
+})
+
+/**
+ * Helper to format date as yymmdd
+ */
+function formatDateYYMMDD(date: Date): string {
+  const yy = String(date.getFullYear()).slice(-2)
+  const mm = String(date.getMonth() + 1).padStart(2, "0")
+  const dd = String(date.getDate()).padStart(2, "0")
+  return `${yy}${mm}${dd}`
+}
+
+/**
+ * HKEX Daily Quotation (每日報價)
+ * Endpoint: https://www.hkex.com.hk/eng/stat/smstat/dayquot/d{yymmdd}e.htm
+ */
+const hkexDailyQuotation = defineSource(async () => {
+  const date = getLatestTradingDay()
+  const dateStr = formatDateYYMMDD(date)
+  const url = `https://www.hkex.com.hk/eng/stat/smstat/dayquot/d${dateStr}e.htm`
+
+  try {
+    const html: string = await myFetch(url, {
+      headers: {
+        "Referer": "https://www.hkex.com.hk/",
+      },
+      responseType: "text",
+    })
+
+    // Parse the quotation table
+    const tablePattern = /<table[^>]*>[\s\S]*?<\/table>/gi
+    let rows: string[][] = []
+
+    // Find the main data table (usually the largest one with stock codes)
+    const allTables = html.match(tablePattern) || []
+    for (const table of allTables) {
+      const tableRows = parseHTMLTableRows(table, /[\s\S]*/)
+      const dataRows = tableRows.filter(row =>
+        row.length >= 6 && /^\d{1,5}$/.test(row[0].trim()),
+      )
+      if (dataRows.length > rows.length) {
+        rows = dataRows
+      }
+    }
+
+    // Extract stock data: [Code, Name, Nominal, Prev Close, Open, High, Low, Close, Change, Volume, Turnover]
+    return rows.slice(0, 30).map(row => ({
+      id: `dq-${row[0]}`,
+      url: `https://www.hkex.com.hk/Market-Data/Securities-Prices/Equities/Equities-Quote?sym=${row[0]}&sc_lang=en`,
+      title: `${row[0]} ${row[1]}`,
+      extra: {
+        info: row.length >= 8
+          ? `收: $${row[7]} | 高: $${row[5]} 低: $${row[6]} | 成交: ${row[9] || "N/A"}`
+          : `價格: $${row[3] || "N/A"}`,
+      },
+    }))
+  }
+  catch {
+    return []
+  }
+})
+
+/**
+ * HKEX Securities List (證券列表)
+ * Note: This endpoint returns XLSX, we can only provide the link
+ */
+const hkexSecuritiesList = defineSource(async () => {
+  // We can't parse XLSX directly, but we can provide useful links
+  return [
+    {
+      id: "securities-list-main",
+      url: "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx",
+      title: "主板證券列表 (XLSX)",
+      extra: {
+        info: "下載完整主板證券列表",
+      },
+    },
+    {
+      id: "securities-list-gem",
+      url: "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities_GEM.xlsx",
+      title: "GEM板證券列表 (XLSX)",
+      extra: {
+        info: "下載完整GEM板證券列表",
+      },
+    },
+    {
+      id: "short-sell-list",
+      url: "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/DesignatedSecuritiesEligibleforShortSelling.xlsx",
+      title: "可賣空證券列表 (XLSX)",
+      extra: {
+        info: "下載可賣空證券列表",
+      },
+    },
+    {
+      id: "etf-list",
+      url: "https://www.hkex.com.hk/Market-Data/Securities-Prices/Exchange-Traded-Products?sc_lang=en",
+      title: "ETF/ETP 產品列表",
+      extra: {
+        info: "查看所有交易所買賣產品",
+      },
+    },
+  ]
+})
+
 export default defineSource({
   // Stock Connect 滬深港通 (不需要 Token)
   "hkex": hkexCSMAll,
@@ -1020,6 +1199,11 @@ export default defineSource({
   "hkex-news": hkexNews,
   "hkex-ipo": hkexIPO,
   "hkex-calendar": hkexCalendar,
+
+  // HTML Parsing Sources (不需要 Token)
+  "hkex-shortselling": hkexShortSelling,
+  "hkex-daily": hkexDailyQuotation,
+  "hkex-securities": hkexSecuritiesList,
 
   // Widget API - Market Overview (需要 HKEX_TOKEN 環境變量)
   "hkex-market": hkexMarketOverview,

@@ -274,6 +274,9 @@ https://www3.hkexnews.hk/sdw/search/searchsdw.aspx
 | `hkex-news` | HKEX 新聞公告 | HKEXnews JSON |
 | `hkex-ipo` | 新股 IPO 公告 | HKEXnews JSON |
 | `hkex-calendar` | 交易日曆 | Calendar JSON |
+| `hkex-shortselling` | 賣空數據 | HTML 解析 |
+| `hkex-daily` | 每日報價 | HTML 解析 |
+| `hkex-securities` | 證券列表連結 | 靜態連結 |
 
 ### 需要 Token 的數據源 (設置 HKEX_TOKEN 環境變量)
 
